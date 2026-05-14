@@ -1092,7 +1092,12 @@ fn dedup_commits(mut commits: Vec<CommitData>) -> Vec<CommitData> {
 #[derive(Serialize, Deserialize)]
 struct CachedCommitHistory {
     since: String,
+    /// Latest committedDate among cached commits (data-derived, used as gap fetch start).
     until: String,
+    /// Query's `until_iso` from the last cache write (used to detect if a new gap exists).
+    /// Empty string on old cache entries; falls back to `until` for backward compat.
+    #[serde(default)]
+    checked_until: String,
     commits: Vec<CommitData>,
 }
 
@@ -1304,7 +1309,8 @@ pub fn fetch_user_stats(
                     since_iso.as_deref(),
                     until_iso.as_deref(),
                 );
-                let fetch_since = if ch.until.as_str() < until_iso.as_deref().unwrap_or("") {
+                let checked = if ch.checked_until.is_empty() { &ch.until } else { &ch.checked_until };
+                let fetch_since = if checked.as_str() < until_iso.as_deref().unwrap_or("") {
                     Some(ch.until.clone())
                 } else {
                     None
@@ -1378,7 +1384,7 @@ pub fn fetch_user_stats(
                             sanitize_cache_key(name),
                         );
                         if let Some(mut ch) = c.get::<CachedCommitHistory>(&history_key) {
-                            ch.until = gap_until.to_string();
+                            ch.checked_until = gap_until.to_string();
                             let _ = c.set(&history_key, &ch);
                         }
                     }
@@ -1438,9 +1444,18 @@ pub fn fetch_user_stats(
                         sanitize_cache_key(owner),
                         sanitize_cache_key(name),
                     );
+                    let default_since = since_iso.clone().unwrap_or_default();
+                    let default_until = until_iso.clone().unwrap_or_default();
+                    let data_until = merged
+                        .iter()
+                        .map(|c| c.committed_date.as_str())
+                        .max()
+                        .unwrap_or(&default_until)
+                        .to_string();
                     let cached_entry = CachedCommitHistory {
-                        since: since_iso.clone().unwrap_or_default(),
-                        until: until_iso.clone().unwrap_or_default(),
+                        since: default_since,
+                        until: data_until,
+                        checked_until: default_until.clone(),
                         commits: merged.clone(),
                     };
                     let _ = c.set(&history_key, &cached_entry);
