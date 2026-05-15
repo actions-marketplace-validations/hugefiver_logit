@@ -115,9 +115,35 @@ fn cmd_stats(args: StatsArgs) -> anyhow::Result<()> {
         commits
     };
 
-    let exclude_rules: Vec<exclude::ExcludeRule> = args.exclude.iter()
+    let mut exclude_rules: Vec<exclude::ExcludeRule> = args.exclude.iter()
         .flat_map(|v| exclude::ExcludeRule::parse_many(v))
         .collect();
+
+    #[cfg(feature = "github")]
+    {
+        let github_users = exclude::collect_github_users(&exclude_rules);
+        if !github_users.is_empty() {
+            match github::GithubClient::new() {
+                Ok(client) => {
+                    for username in &github_users {
+                        match client.resolve_user_emails(username) {
+                            Ok(emails) => {
+                                eprintln!("Resolved @{username} → {} email(s)", emails.len());
+                                for rule in &mut exclude_rules {
+                                    rule.resolve_github_user(username, &emails);
+                                }
+                            }
+                            Err(e) => eprintln!("Warning: failed to resolve @{username}: {e}"),
+                        }
+                    }
+                }
+                Err(_) => {
+                    eprintln!("Warning: --exclude with @user requires GITHUB_TOKEN; skipping GitHub resolution");
+                }
+            }
+        }
+    }
+
     let commits = exclude::filter_commits(commits, &exclude_rules);
 
     let period = args.period.unwrap_or(Period::Month);

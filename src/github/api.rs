@@ -449,6 +449,40 @@ impl GithubClient {
             .map(|a| a.login.clone())
     }
 
+    pub fn resolve_user_emails(&self, username: &str) -> anyhow::Result<Vec<String>> {
+        let repos = self.list_user_repos_graphql(username, false)?;
+        let mut emails: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for repo in repos.iter().take(8) {
+            let url = format!(
+                "https://api.github.com/repos/{}/{}/commits?author={}&per_page=20",
+                repo.owner, repo.name, username
+            );
+            let Ok(resp) = self.client.get(&url).send() else { continue };
+            if !resp.status().is_success() {
+                continue;
+            }
+            let Ok(commits): Result<Vec<serde_json::Value>, _> = resp.json() else { continue };
+            for commit in commits {
+                if let Some(email) = commit
+                    .pointer("/commit/author/email")
+                    .and_then(|v| v.as_str())
+                    .filter(|e| !e.is_empty())
+                {
+                    emails.insert(email.to_string());
+                }
+            }
+        }
+
+        if emails.is_empty() {
+            anyhow::bail!("No commit emails found for GitHub user '{username}'. The user may have no public repos or commits.");
+        }
+
+        let mut sorted: Vec<String> = emails.into_iter().collect();
+        sorted.sort();
+        Ok(sorted)
+    }
+
     #[allow(dead_code)]
     pub fn list_user_repos_graphql(
         &self,

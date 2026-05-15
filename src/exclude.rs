@@ -32,6 +32,8 @@ struct AndGroup {
     path_regex: Option<Regex>,
     author_pattern: Option<AuthorPattern>,
     committer_pattern: Option<AuthorPattern>,
+    author_emails: Vec<String>,
+    committer_emails: Vec<String>,
 }
 
 impl AndGroup {
@@ -48,8 +50,20 @@ impl AndGroup {
     }
 
     fn matches_commit(&self, author: &Author, committer: &Author) -> bool {
-        let a = self.author_pattern.as_ref().map_or(true, |p| p.matches(&author.name, &author.email));
-        let c = self.committer_pattern.as_ref().map_or(true, |p| p.matches(&committer.name, &committer.email));
+        let a = match &self.author_pattern {
+            Some(pat) => pat.matches(&author.name, &author.email),
+            None if !self.author_emails.is_empty() => {
+                self.author_emails.iter().any(|e| e.eq_ignore_ascii_case(&author.email))
+            }
+            None => true,
+        };
+        let c = match &self.committer_pattern {
+            Some(pat) => pat.matches(&committer.name, &committer.email),
+            None if !self.committer_emails.is_empty() => {
+                self.committer_emails.iter().any(|e| e.eq_ignore_ascii_case(&committer.email))
+            }
+            None => true,
+        };
         a && c
     }
 
@@ -132,6 +146,36 @@ impl ExcludeRule {
         if !self.matches_repo(repo_name) { return Vec::new(); }
         self.and_groups.iter().filter_map(|g| g.lang.clone()).collect()
     }
+
+    pub fn collect_github_users(&self) -> Vec<String> {
+        let mut users = Vec::new();
+        for group in &self.and_groups {
+            if let Some(AuthorPattern::GitHubUser(ref u)) = group.author_pattern {
+                if !users.contains(u) { users.push(u.clone()); }
+            }
+            if let Some(AuthorPattern::GitHubUser(ref u)) = group.committer_pattern {
+                if !users.contains(u) { users.push(u.clone()); }
+            }
+        }
+        users
+    }
+
+    pub fn resolve_github_user(&mut self, username: &str, emails: &[String]) {
+        for group in &mut self.and_groups {
+            if let Some(AuthorPattern::GitHubUser(ref u)) = group.author_pattern {
+                if u == username {
+                    group.author_emails = emails.to_vec();
+                    group.author_pattern = None;
+                }
+            }
+            if let Some(AuthorPattern::GitHubUser(ref u)) = group.committer_pattern {
+                if u == username {
+                    group.committer_emails = emails.to_vec();
+                    group.committer_pattern = None;
+                }
+            }
+        }
+    }
 }
 
 fn is_qualifier_prefix(s: &str) -> bool {
@@ -183,6 +227,8 @@ fn parse_author(pattern: &str) -> Option<AuthorPattern> {
         return None;
     }
     if let Some(username) = pattern.strip_prefix("github:") {
+        Some(AuthorPattern::GitHubUser(username.to_string()))
+    } else if let Some(username) = pattern.strip_prefix('@') {
         Some(AuthorPattern::GitHubUser(username.to_string()))
     } else if let Ok(pat) = Pattern::new(pattern) {
         Some(AuthorPattern::Glob(pat))
@@ -273,6 +319,18 @@ pub fn excluded_langs_for_repo(repo_name: &str, rules: &[ExcludeRule]) -> Vec<St
 
 pub fn any_path_rules(rules: &[ExcludeRule]) -> bool {
     rules.iter().any(|r| r.has_path())
+}
+
+pub fn collect_github_users(rules: &[ExcludeRule]) -> Vec<String> {
+    let mut users = Vec::new();
+    for rule in rules {
+        for user in rule.collect_github_users() {
+            if !users.contains(&user) {
+                users.push(user);
+            }
+        }
+    }
+    users
 }
 
 #[cfg(test)]
@@ -444,5 +502,48 @@ mod tests {
         let author = Author { name: "alice".into(), email: "alice@example.com".into() };
         let committer = Author { name: "alice".into(), email: "alice@example.com".into() };
         assert!(!group.matches_commit(&author, &committer));
+    }
+
+    #[test]
+    fn parse_author_at_shorthand() {
+        let rules = ExcludeRule::parse_many(":author:@torvalds");
+        assert_eq!(rules.len(), 1);
+        assert!(matches!(&rules[0].and_groups[0].author_pattern, Some(AuthorPattern::GitHubUser(u)) if u == "torvalds"));
+    }
+
+    #[test]
+    fn resolve_github_user_replaces_pattern_with_emails() {
+        let mut rule = ExcludeRule {
+            repo: None,
+            and_groups: vec![AndGroup {
+                author_pattern: Some(AuthorPattern::GitHubUser("testuser".into())),
+                ..Default::default()
+            }],
+        };
+        rule.resolve_github_user("testuser", &["a@b.com".into(), "c@d.com".into()]);
+        assert!(rule.and_groups[0].author_pattern.is_none());
+        assert_eq!(rule.and_groups[0].author_emails.len(), 2);
+    }
+
+    #[test]
+    fn author_emails_match_exact() {
+        let group = AndGroup {
+            author_emails: vec!["bot@example.com".into()],
+            ..Default::default()
+        };
+        let author = Author { name: "Bot".into(), email: "bot@example.com".into() };
+        let committer = Author { name: "ci".into(), email: "ci@example.com".into() };
+        assert!(group.matches_commit(&author, &committer));
+    }
+
+    #[test]
+    fn author_emails_case_insensitive() {
+        let group = AndGroup {
+            author_emails: vec!["Bot@Example.com".into()],
+            ..Default::default()
+        };
+        let author = Author { name: "bot".into(), email: "bot@example.com".into() };
+        let committer = Author { name: "ci".into(), email: "ci@example.com".into() };
+        assert!(group.matches_commit(&author, &committer));
     }
 }
