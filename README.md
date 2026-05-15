@@ -58,6 +58,28 @@ logit stats --compact --short
 - If a grouping level has only one unique value across all data, it is automatically skipped.
 - `language` can only appear as the last group.
 
+#### Excluding repos, languages, and paths
+
+`--exclude` filters repos, languages, or file paths. Repeatable.
+
+```sh
+# Exclude entire repos
+logit stats --exclude old-project --exclude archived-repo
+
+# Exclude a language within a specific repo
+logit stats --exclude my-repo:lang:markdown
+
+# Exclude file paths matching a glob within a repo
+logit stats --exclude my-repo:path:docs/**
+logit stats --exclude frontend:path:**/*.test.ts
+
+# Combine qualifiers for one repo
+logit stats --exclude "my-repo:lang:md,p:*.md"
+
+# Global language/path exclusion (no repo prefix)
+logit stats --exclude :lang:json --exclude :path:**/*.lock
+```
+
 ### GitHub statistics
 
 Requires a `GITHUB_TOKEN` environment variable (PAT with `read:user` scope).
@@ -137,6 +159,7 @@ jobs:
 | `include-contributed` | `false` | Include contributed repos |
 | `include-private` | `false` | Include token holder's private repos (requires PAT matching `username`; default `${{ github.token }}` is silently ignored) |
 | `exclude-lang` | | Languages to exclude |
+| `exclude` | | Multi-line exclusions (repo[␣:lang:LANG|:path:GLOB]) |
 | `short` | `false` | Compact card layout |
 | `lang-rows` | `2` | Language rows |
 | `title` | | Custom title |

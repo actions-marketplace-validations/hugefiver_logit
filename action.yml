@@ -33,6 +33,16 @@ inputs:
   exclude-lang:
     description: 'Comma-separated languages to exclude'
     default: ''
+  exclude:
+    description: |
+      Multi-line exclusions. One rule per line.
+      Format: REPO[:lang:LANG|:path:GLOB]
+      Examples:
+        my-repo
+        my-repo:lang:markdown
+        my-repo:path:docs/**
+        frontend,backend:lang:css
+    default: ''
   short:
     description: 'Use compact card layout (card only)'
     default: 'false'
@@ -108,6 +118,12 @@ runs:
         if [ "${{ inputs.include-contributed }}" = "true" ]; then CMD="$CMD --include-contributed"; fi
         if [ "${{ inputs.include-private }}" = "true" ]; then CMD="$CMD --include-private"; fi
         if [ -n "${{ inputs.exclude-lang }}" ]; then CMD="$CMD --exclude-lang ${{ inputs.exclude-lang }}"; fi
+        if [ -n "${{ inputs.exclude }}" ]; then
+          while IFS= read -r line; do
+            line="$(echo "$line" | xargs)"
+            if [ -n "$line" ]; then CMD="$CMD --exclude $line"; fi
+          done <<< "${{ inputs.exclude }}"
+        fi
 
         CMD="$CMD -o ${{ inputs.output }}"
         echo "Running: $CMD"

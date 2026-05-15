@@ -6,6 +6,7 @@
 mod analyze;
 mod cli;
 mod error;
+mod exclude;
 mod filter;
 mod git;
 mod lang;
@@ -113,6 +114,11 @@ fn cmd_stats(args: StatsArgs) -> anyhow::Result<()> {
     } else {
         commits
     };
+
+    let exclude_rules: Vec<exclude::ExcludeRule> = args.exclude.iter()
+        .flat_map(|v| exclude::ExcludeRule::parse_many(v))
+        .collect();
+    let commits = exclude::filter_commits(commits, &exclude_rules);
 
     let period = args.period.unwrap_or(Period::Month);
     let author_filter = args.author.as_deref();
@@ -299,7 +305,7 @@ fn build_remote_identity_map(
 fn cmd_github_fetch(args: cli::GithubFetchArgs) -> anyhow::Result<()> {
     use cli::FetchFormat;
 
-    let (user, contributions, contribution_summary, days_value) = fetch_github_data(
+    let (user, mut contributions, contribution_summary, days_value) = fetch_github_data(
         &args.data.username,
         args.data.days,
         args.data.since.as_deref(),
@@ -310,6 +316,23 @@ fn cmd_github_fetch(args: cli::GithubFetchArgs) -> anyhow::Result<()> {
         args.data.no_cache,
         args.data.refresh_cache,
     )?;
+
+    let exclude_rules: Vec<exclude::ExcludeRule> = args.exclude.iter()
+        .flat_map(|v| exclude::ExcludeRule::parse_many(v))
+        .collect();
+    if !exclude_rules.is_empty() {
+        let before = contributions.len();
+        contributions.retain(|c| !exclude::is_repo_excluded(&c.repo_name, &exclude_rules));
+        if contributions.len() < before {
+            eprintln!("Excluded {} repo(s) via --exclude", before - contributions.len());
+        }
+        for c in &mut contributions {
+            let langs = exclude::excluded_langs_for_repo(&c.repo_name, &exclude_rules);
+            for lang in langs {
+                c.languages.retain(|l, _| !l.eq_ignore_ascii_case(&lang));
+            }
+        }
+    }
 
     let period = args.period.unwrap_or(Period::Month);
     let num_fmt = if args.short { cli::NumberFormat::Short } else { args.number_format };
@@ -404,7 +427,7 @@ fn cmd_github_card(args: cli::GithubCardArgs) -> anyhow::Result<()> {
                 .as_deref()
                 .expect("username is required when --input is not provided");
 
-            let (user, contributions, contribution_summary, days_value) = fetch_github_data(
+            let (user, mut contributions, contribution_summary, days_value) = fetch_github_data(
                 username,
                 args.days,
                 args.since.as_deref(),
@@ -416,6 +439,20 @@ fn cmd_github_card(args: cli::GithubCardArgs) -> anyhow::Result<()> {
                 args.refresh_cache,
             )?;
 
+            let exclude_rules: Vec<exclude::ExcludeRule> = args.exclude.iter()
+                .flat_map(|v| exclude::ExcludeRule::parse_many(v))
+                .collect();
+            if !exclude_rules.is_empty() {
+                contributions.retain(|c| !exclude::is_repo_excluded(&c.repo_name, &exclude_rules));
+                for c in &mut contributions {
+                    let langs = exclude::excluded_langs_for_repo(&c.repo_name, &exclude_rules);
+                    for lang in langs {
+                        c.languages.retain(|l, _| !l.eq_ignore_ascii_case(&lang));
+                    }
+                }
+            }
+
+            let active_repos = contributions.len();
             let period_stats = github::api::contributions_to_period_stats(&contributions, &Period::Month);
             let totals = stats::aggregator::aggregate_totals(&period_stats);
 
@@ -423,7 +460,7 @@ fn cmd_github_card(args: cli::GithubCardArgs) -> anyhow::Result<()> {
                 user,
                 totals,
                 contribution_summary,
-                contributions.len(),
+                active_repos,
                 days_value,
                 username.to_string(),
             )
@@ -629,13 +666,17 @@ fn cmd_github_multi(args: cli::GithubMultiArgs) -> anyhow::Result<()> {
     let read_cache = !args.no_cache;
     let write_cache = args.refresh_cache;
 
+    let exclude_rules: Vec<exclude::ExcludeRule> = args.exclude.iter()
+        .flat_map(|v| exclude::ExcludeRule::parse_many(v))
+        .collect();
+
     let mut columns = Vec::new();
     for period_str in &args.periods {
         let days = parse_period(period_str)?;
         let duration = chrono::Duration::seconds((days * 86400.0) as i64);
         let since_ts = Some((Utc::now() - duration).timestamp());
 
-        let (contributions, _summary) = github::api::fetch_user_stats(
+        let (mut contributions, _summary) = github::api::fetch_user_stats(
             &client,
             &user.node_id,
             &args.username,
@@ -647,6 +688,20 @@ fn cmd_github_multi(args: cli::GithubMultiArgs) -> anyhow::Result<()> {
             read_cache,
             write_cache,
         )?;
+
+        if !exclude_rules.is_empty() {
+            contributions.retain(|c| !exclude::is_repo_excluded(&c.repo_name, &exclude_rules));
+            for c in &mut contributions {
+                let langs = exclude::excluded_langs_for_repo(&c.repo_name, &exclude_rules);
+                for lang in langs {
+                    c.languages.retain(|l, _| !l.eq_ignore_ascii_case(&lang));
+                }
+            }
+        }
+
+        if contributions.is_empty() {
+            continue;
+        }
 
         let period_stats =
             github::api::contributions_to_period_stats(&contributions, &Period::Month);

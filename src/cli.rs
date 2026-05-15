@@ -76,6 +76,12 @@ pub struct StatsArgs {
     )]
     pub exclude_lang: Vec<String>,
 
+    #[arg(
+        long = "exclude",
+        help = "Exclude repos/languages/paths. Format: REPO[:lang:LANG|:path:GLOB][,...]. Repeatable."
+    )]
+    pub exclude: Vec<String>,
+
     #[arg(short = 'f', long, value_enum, default_value_t = OutputFormat::Table)]
     pub format: OutputFormat,
 
@@ -362,6 +368,12 @@ pub struct GithubFetchArgs {
     )]
     pub exclude_lang: Vec<String>,
 
+    #[arg(
+        long = "exclude",
+        help = "Exclude repos/languages/paths. Format: REPO[:lang:LANG|:path:GLOB][,...]. Repeatable."
+    )]
+    pub exclude: Vec<String>,
+
     #[arg(long, value_enum, help = "Sort by column")]
     pub sort: Option<SortBy>,
 }
@@ -454,6 +466,12 @@ pub struct GithubCardArgs {
     )]
     pub exclude_lang: Vec<String>,
 
+    #[arg(
+        long = "exclude",
+        help = "Exclude repos/languages/paths. Format: REPO[:lang:LANG|:path:GLOB][,...]. Repeatable."
+    )]
+    pub exclude: Vec<String>,
+
     #[arg(short = 'o', long, help = "Write SVG to file instead of stdout")]
     pub output: Option<PathBuf>,
 }
@@ -496,6 +514,12 @@ pub struct GithubMultiArgs {
         value_delimiter = ','
     )]
     pub exclude_lang: Vec<String>,
+
+    #[arg(
+        long = "exclude",
+        help = "Exclude repos/languages/paths. Format: REPO[:lang:LANG|:path:GLOB][,...]. Repeatable."
+    )]
+    pub exclude: Vec<String>,
 
     #[arg(short = 'o', long, help = "Write SVG to file instead of stdout")]
     pub output: Option<PathBuf>,
