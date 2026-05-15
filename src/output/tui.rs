@@ -7,6 +7,8 @@ use ratatui::{
     DefaultTerminal, Frame,
 };
 
+use crate::cli::NumberFormat;
+use crate::output::table::format_num;
 use crate::stats::models::PeriodStats;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -42,12 +44,14 @@ fn lang_tree_row<'a>(
     dim: Style,
     dim_green: Style,
     dim_red: Style,
+    num_fmt: NumberFormat,
 ) -> Row<'a> {
     let net: i64 = adds as i64 - dels as i64;
+    let net_abs = format_num(net.unsigned_abs(), num_fmt);
     let net_str = if net >= 0 {
-        format!("+{net}")
+        format!("+{net_abs}")
     } else {
-        format!("{net}")
+        format!("-{net_abs}")
     };
     Row::new([
         Cell::from(Line::from(Span::styled(
@@ -57,9 +61,9 @@ fn lang_tree_row<'a>(
         Cell::from(""),
         Cell::from(Line::from(vec![
             Span::styled(format!("{net_str} ("), dim),
-            Span::styled(format!("+{adds}"), dim_green),
+            Span::styled(format!("+{}", format_num(adds, num_fmt)), dim_green),
             Span::styled(" ", dim),
-            Span::styled(format!("-{dels}"), dim_red),
+            Span::styled(format!("-{}", format_num(dels, num_fmt)), dim_red),
             Span::styled(")", dim),
         ])),
         Cell::from(""),
@@ -74,18 +78,20 @@ fn lang_flat_row<'a>(
     dim: Style,
     dim_green: Style,
     dim_red: Style,
+    num_fmt: NumberFormat,
 ) -> Row<'a> {
     let net: i64 = adds as i64 - dels as i64;
+    let net_abs = format_num(net.unsigned_abs(), num_fmt);
     let net_str = if net >= 0 {
-        format!("+{net}")
+        format!("+{net_abs}")
     } else {
-        format!("{net}")
+        format!("-{net_abs}")
     };
     Row::new([
         Cell::from(Line::from(Span::styled(format!("  {lang_name}"), dim))),
         Cell::from(Line::from(Span::styled(net_str, dim))),
-        Cell::from(Line::from(Span::styled(format!("+{adds}"), dim_green))),
-        Cell::from(Line::from(Span::styled(format!("-{dels}"), dim_red))),
+        Cell::from(Line::from(Span::styled(format!("+{}", format_num(adds, num_fmt)), dim_green))),
+        Cell::from(Line::from(Span::styled(format!("-{}", format_num(dels, num_fmt)), dim_red))),
         Cell::from(""),
     ])
 }
@@ -96,10 +102,11 @@ pub struct TuiApp {
     table_state: TableState,
     should_quit: bool,
     view_mode: ViewMode,
+    num_fmt: NumberFormat,
 }
 
 impl TuiApp {
-    pub fn new(stats: Vec<PeriodStats>, totals: PeriodStats) -> Self {
+    pub fn new(stats: Vec<PeriodStats>, totals: PeriodStats, num_fmt: NumberFormat) -> Self {
         let mut table_state = TableState::default();
         if !stats.is_empty() {
             table_state.select(Some(0));
@@ -110,6 +117,7 @@ impl TuiApp {
             table_state,
             should_quit: false,
             view_mode: ViewMode::Tree,
+            num_fmt,
         }
     }
 
@@ -180,13 +188,13 @@ impl TuiApp {
         for p in &self.stats {
             all_rows.push(Row::new([
                 Cell::from(p.period_label.clone()),
-                Cell::from(p.total_commits.to_string()),
+                Cell::from(format_num(p.total_commits, self.num_fmt)),
                 Cell::from(Line::from(Span::styled(
-                    format!("+{}", p.total_additions),
+                    format!("+{}", format_num(p.total_additions, self.num_fmt)),
                     green,
                 ))),
                 Cell::from(Line::from(Span::styled(
-                    format!("-{}", p.total_deletions),
+                    format!("-{}", format_num(p.total_deletions, self.num_fmt)),
                     red,
                 ))),
                 Cell::from(top_language(p)),
@@ -201,10 +209,10 @@ impl TuiApp {
                         } else {
                             "├── "
                         };
-                        lang_tree_row(prefix, lang_name, *adds, *dels, dim, dim_green, dim_red)
+                        lang_tree_row(prefix, lang_name, *adds, *dels, dim, dim_green, dim_red, self.num_fmt)
                     }
                     ViewMode::Flat => {
-                        lang_flat_row(lang_name, *adds, *dels, dim, dim_green, dim_red)
+                        lang_flat_row(lang_name, *adds, *dels, dim, dim_green, dim_red, self.num_fmt)
                     }
                 });
             }
@@ -225,15 +233,15 @@ impl TuiApp {
         all_rows.push(Row::new([
             Cell::from(Line::from(Span::styled("Total", totals_bold))),
             Cell::from(Line::from(Span::styled(
-                self.totals.total_commits.to_string(),
+                format_num(self.totals.total_commits, self.num_fmt),
                 totals_bold,
             ))),
             Cell::from(Line::from(Span::styled(
-                format!("+{}", self.totals.total_additions),
+                format!("+{}", format_num(self.totals.total_additions, self.num_fmt)),
                 green.add_modifier(Modifier::BOLD),
             ))),
             Cell::from(Line::from(Span::styled(
-                format!("-{}", self.totals.total_deletions),
+                format!("-{}", format_num(self.totals.total_deletions, self.num_fmt)),
                 red.add_modifier(Modifier::BOLD),
             ))),
             Cell::from(Line::from(Span::styled(
@@ -251,9 +259,9 @@ impl TuiApp {
                     } else {
                         "├── "
                     };
-                    lang_tree_row(prefix, lang_name, *adds, *dels, dim, dim_green, dim_red)
+                    lang_tree_row(prefix, lang_name, *adds, *dels, dim, dim_green, dim_red, self.num_fmt)
                 }
-                ViewMode::Flat => lang_flat_row(lang_name, *adds, *dels, dim, dim_green, dim_red),
+                ViewMode::Flat => lang_flat_row(lang_name, *adds, *dels, dim, dim_green, dim_red, self.num_fmt),
             });
         }
 
@@ -349,9 +357,9 @@ impl TuiApp {
     }
 }
 
-pub fn run_tui(stats: &[PeriodStats], totals: &PeriodStats) -> anyhow::Result<()> {
+pub fn run_tui(stats: &[PeriodStats], totals: &PeriodStats, num_fmt: NumberFormat) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
-    let mut app = TuiApp::new(stats.to_vec(), totals.clone());
+    let mut app = TuiApp::new(stats.to_vec(), totals.clone(), num_fmt);
     let result = app.run(&mut terminal);
     ratatui::restore();
     result
@@ -436,13 +444,13 @@ mod tests {
 
     #[test]
     fn should_quit_defaults_to_false() {
-        let app = TuiApp::new(sample_stats(), make_totals());
+        let app = TuiApp::new(sample_stats(), make_totals(), NumberFormat::Separated);
         assert!(!app.should_quit);
     }
 
     #[test]
     fn next_row_wraps_at_end() {
-        let mut app = TuiApp::new(sample_stats(), make_totals());
+        let mut app = TuiApp::new(sample_stats(), make_totals(), NumberFormat::Separated);
         let total = app.row_count();
         assert_eq!(app.table_state.selected(), Some(0));
         for i in 1..total {
@@ -455,7 +463,7 @@ mod tests {
 
     #[test]
     fn prev_row_wraps_at_beginning() {
-        let mut app = TuiApp::new(sample_stats(), make_totals());
+        let mut app = TuiApp::new(sample_stats(), make_totals(), NumberFormat::Separated);
         let total = app.row_count();
         assert_eq!(app.table_state.selected(), Some(0));
         app.prev_row();
@@ -465,7 +473,7 @@ mod tests {
     #[test]
     fn navigation_on_empty_stats_does_not_panic() {
         let totals = make_period("Total", 0, 0, 0);
-        let mut app = TuiApp::new(vec![], totals);
+        let mut app = TuiApp::new(vec![], totals, NumberFormat::Separated);
         assert_eq!(app.table_state.selected(), None);
         app.next_row();
         app.prev_row();
@@ -527,14 +535,14 @@ mod tests {
     fn row_count_includes_language_rows() {
         let stats = vec![make_multi_lang_period("2025-W01")];
         let totals = make_totals();
-        let app = TuiApp::new(stats, totals);
+        let app = TuiApp::new(stats, totals, NumberFormat::Separated);
         assert_eq!(app.row_count(), 6);
     }
 
     #[test]
     fn row_count_empty_is_zero() {
         let totals = make_period("Total", 0, 0, 0);
-        let app = TuiApp::new(vec![], totals);
+        let app = TuiApp::new(vec![], totals, NumberFormat::Separated);
         assert_eq!(app.row_count(), 0);
     }
 
@@ -549,7 +557,7 @@ mod tests {
 
     #[test]
     fn toggle_view_switches_mode() {
-        let mut app = TuiApp::new(sample_stats(), make_totals());
+        let mut app = TuiApp::new(sample_stats(), make_totals(), NumberFormat::Separated);
         assert_eq!(app.view_mode, ViewMode::Tree);
         app.toggle_view();
         assert_eq!(app.view_mode, ViewMode::Flat);

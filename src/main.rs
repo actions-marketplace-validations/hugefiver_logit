@@ -220,7 +220,7 @@ fn cmd_stats(args: StatsArgs) -> anyhow::Result<()> {
                 write_output(content, args.output.as_deref())?;
             }
             #[cfg(feature = "tui")]
-            OutputFormat::Tui => output::tui::run_tui(&period_stats, &totals)?,
+            OutputFormat::Tui => output::tui::run_tui(&period_stats, &totals, num_fmt)?,
         }
     }
 
@@ -380,7 +380,7 @@ fn cmd_github_fetch(args: cli::GithubFetchArgs) -> anyhow::Result<()> {
             write_output(content, args.output.as_deref())?;
         }
         #[cfg(feature = "tui")]
-        FetchFormat::Tui => output::tui::run_tui(&period_stats, &totals)?,
+        FetchFormat::Tui => output::tui::run_tui(&period_stats, &totals, num_fmt)?,
     }
 
     Ok(())
