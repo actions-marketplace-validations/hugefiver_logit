@@ -187,7 +187,10 @@ impl GithubClient {
 
         let body = serde_json::json!({ "query": query, "variables": variables });
 
-        for attempt in 0..3u32 {
+        const BACKOFF_SECS: [u64; 6] = [1, 2, 5, 15, 30, 60];
+        let max_attempts = BACKOFF_SECS.len() + 1;
+
+        for attempt in 0..max_attempts {
             let resp = self
                 .client
                 .post("https://api.github.com/graphql")
@@ -198,17 +201,37 @@ impl GithubClient {
                 401 => anyhow::bail!("GitHub GraphQL authentication failed. Check GITHUB_TOKEN."),
                 403 => {
                     let wait = Self::parse_rate_limit_wait(&resp);
-                    if attempt < 2 {
+                    if attempt + 1 < max_attempts {
                         let secs = wait.unwrap_or(60).min(120);
                         eprintln!(
                             "\nRate limited by GitHub API. Waiting {secs}s before retry (attempt {}/{})...",
-                            attempt + 1, 3
+                            attempt + 1, max_attempts
                         );
                         std::thread::sleep(std::time::Duration::from_secs(secs));
                         continue;
                     }
                     anyhow::bail!(
-                        "GitHub API rate limit exceeded after retries. Try again later or check GITHUB_TOKEN scopes."
+                        "GitHub API rate limit exceeded after {n} retries. Try again later or check GITHUB_TOKEN scopes.",
+                        n = max_attempts - 1
+                    );
+                }
+                500..=599 => {
+                    if attempt + 1 < max_attempts {
+                        let secs = BACKOFF_SECS[attempt];
+                        let status = resp.status().as_u16();
+                        eprintln!(
+                            "\nGitHub API server error ({status}). Backing off {secs}s before retry (attempt {a}/{m})...",
+                            a = attempt + 1,
+                            m = max_attempts,
+                        );
+                        std::thread::sleep(std::time::Duration::from_secs(secs));
+                        let _ = resp.bytes();
+                        continue;
+                    }
+                    anyhow::bail!(
+                        "GitHub API server errors persisted after {n} retries. Last status: {s}.",
+                        n = max_attempts - 1,
+                        s = resp.status().as_u16()
                     );
                 }
                 200..=299 => {
@@ -240,7 +263,7 @@ impl GithubClient {
             }
         }
 
-        anyhow::bail!("GitHub GraphQL query failed after retries")
+        anyhow::bail!("GitHub GraphQL query failed after {n} retries", n = max_attempts - 1)
     }
 
     fn parse_rate_limit_wait(resp: &reqwest::blocking::Response) -> Option<u64> {
