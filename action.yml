@@ -36,11 +36,10 @@ inputs:
   exclude:
     description: |
       Multi-line exclusions. One rule per line.
-      Format: REPO[:lang:LANG|:path:GLOB]
+      Format: REPO[:lang:LANG]
       Examples:
         my-repo
         my-repo:lang:markdown
-        my-repo:path:docs/**
         frontend,backend:lang:css
     default: ''
   short:

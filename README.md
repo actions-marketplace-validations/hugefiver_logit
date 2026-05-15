@@ -159,7 +159,7 @@ jobs:
 | `include-contributed` | `false` | Include contributed repos |
 | `include-private` | `false` | Include token holder's private repos (requires PAT matching `username`; default `${{ github.token }}` is silently ignored) |
 | `exclude-lang` | | Languages to exclude |
-| `exclude` | | Multi-line exclusions (repo[␣:lang:LANG|:path:GLOB]) |
+| `exclude` | | Multi-line exclusions (repo[:lang:LANG]) |
 | `short` | `false` | Compact card layout |
 | `lang-rows` | `2` | Language rows |
 | `title` | | Custom title |

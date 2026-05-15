@@ -321,6 +321,9 @@ fn cmd_github_fetch(args: cli::GithubFetchArgs) -> anyhow::Result<()> {
         .flat_map(|v| exclude::ExcludeRule::parse_many(v))
         .collect();
     if !exclude_rules.is_empty() {
+        if exclude::any_path_rules(&exclude_rules) {
+            eprintln!("Warning: --exclude path rules are ignored in GitHub mode (no per-file data from API)");
+        }
         let before = contributions.len();
         contributions.retain(|c| !exclude::is_repo_excluded(&c.repo_name, &exclude_rules));
         if contributions.len() < before {
@@ -443,6 +446,9 @@ fn cmd_github_card(args: cli::GithubCardArgs) -> anyhow::Result<()> {
                 .flat_map(|v| exclude::ExcludeRule::parse_many(v))
                 .collect();
             if !exclude_rules.is_empty() {
+                if exclude::any_path_rules(&exclude_rules) {
+                    eprintln!("Warning: --exclude path rules are ignored in GitHub mode (no per-file data from API)");
+                }
                 contributions.retain(|c| !exclude::is_repo_excluded(&c.repo_name, &exclude_rules));
                 for c in &mut contributions {
                     let langs = exclude::excluded_langs_for_repo(&c.repo_name, &exclude_rules);
@@ -669,6 +675,9 @@ fn cmd_github_multi(args: cli::GithubMultiArgs) -> anyhow::Result<()> {
     let exclude_rules: Vec<exclude::ExcludeRule> = args.exclude.iter()
         .flat_map(|v| exclude::ExcludeRule::parse_many(v))
         .collect();
+    if exclude::any_path_rules(&exclude_rules) {
+        eprintln!("Warning: --exclude path rules are ignored in GitHub mode (no per-file data from API)");
+    }
 
     let mut columns = Vec::new();
     for period_str in &args.periods {

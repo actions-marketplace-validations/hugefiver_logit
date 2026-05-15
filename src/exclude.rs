@@ -247,6 +247,10 @@ pub fn excluded_langs_for_repo(repo_name: &str, rules: &[ExcludeRule]) -> Vec<St
         .collect()
 }
 
+pub fn any_path_rules(rules: &[ExcludeRule]) -> bool {
+    rules.iter().any(|r| r.has_path())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
