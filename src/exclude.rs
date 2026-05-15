@@ -109,6 +109,18 @@ impl ExcludeRule {
                 continue;
             }
 
+            if let Some(username) = part.strip_prefix('@') {
+                let mut group = AndGroup::default();
+                group.author_pattern = Some(AuthorPattern::GitHubUser(username.to_string()));
+                let groups = vec![group];
+                if let Some(rule) = rules.last_mut() {
+                    rule.and_groups.extend(groups);
+                } else {
+                    rules.push(ExcludeRule { repo: None, and_groups: groups });
+                }
+                continue;
+            }
+
             if let Some((repo_part, quals)) = part.split_once(':') {
                 let repo = if repo_part.is_empty() { None } else { Some(repo_part.to_string()) };
                 let groups = parse_all_qualifiers(quals);
@@ -184,6 +196,8 @@ fn is_qualifier_prefix(s: &str) -> bool {
         || s.starts_with("l:")
         || s.starts_with("path:")
         || s.starts_with("p:")
+        || s.starts_with("user:")
+        || s.starts_with("u:")
         || s.starts_with("author:")
         || s.starts_with("a:")
         || s.starts_with("committer:")
@@ -204,6 +218,11 @@ fn parse_all_qualifiers(rest: &str) -> Vec<AndGroup> {
                 match key {
                     "lang" | "language" | "l" => group.lang = Some(value.trim().to_string()),
                     "path" | "p" => set_path(&mut group, value.trim()),
+                    "user" | "u" => {
+                        let pat = parse_author(value.trim());
+                        group.author_pattern = pat.clone();
+                        group.committer_pattern = pat;
+                    }
                     "author" | "a" => group.author_pattern = parse_author(value.trim()),
                     "committer" | "c" => group.committer_pattern = parse_author(value.trim()),
                     _ => {}
