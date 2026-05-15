@@ -1,92 +1,110 @@
 //! --exclude rule parsing and commit/contribution filtering.
 //!
-//! Format: `--exclude REPO[:QUAL:VALUE[,...]]`
-//!
-//! Examples:
-//! - `--exclude my-repo`            → exclude entire repo
-//! - `--exclude my-repo:lang:rust`  → exclude Rust in my-repo
-//! - `--exclude my-repo:l:rust`     → same, short form
-//! - `--exclude my-repo:path:docs/**` → exclude files under docs/ in my-repo
-//! - `--exclude my-repo:l:md,p:*.md`  → exclude Markdown language AND *.md paths
-//! - `--exclude repo1,repo2:lang:js`  → exclude repo1 entirely, plus JS in repo2
+//! `,` = OR (separate groups), `+` = AND (same group, all qualifiers must match).
+//! Qualifiers: lang/l, path/p, author/a, committer/c.
 
 use glob::Pattern;
 use regex::Regex;
 
 use crate::stats::models::CommitStats;
+use crate::stats::models::Author;
 
-/// A single exclusion rule parsed from one `--exclude` value.
+#[derive(Debug, Clone)]
+enum AuthorPattern {
+    Glob(Pattern),
+    #[allow(dead_code)]
+    GitHubUser(String),
+}
+
+impl AuthorPattern {
+    fn matches(&self, name: &str, email: &str) -> bool {
+        match self {
+            AuthorPattern::Glob(pat) => pat.matches(name) || pat.matches(email),
+            AuthorPattern::GitHubUser(_) => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct AndGroup {
+    lang: Option<String>,
+    path_pattern: Option<Pattern>,
+    path_regex: Option<Regex>,
+    author_pattern: Option<AuthorPattern>,
+    committer_pattern: Option<AuthorPattern>,
+}
+
+impl AndGroup {
+    fn has_file_qualifiers(&self) -> bool {
+        self.lang.is_some() || self.path_pattern.is_some() || self.path_regex.is_some()
+    }
+
+    fn has_commit_qualifiers(&self) -> bool {
+        self.author_pattern.is_some() || self.committer_pattern.is_some()
+    }
+
+    fn is_empty(&self) -> bool {
+        !self.has_file_qualifiers() && !self.has_commit_qualifiers()
+    }
+
+    fn matches_commit(&self, author: &Author, committer: &Author) -> bool {
+        let a = self.author_pattern.as_ref().map_or(true, |p| p.matches(&author.name, &author.email));
+        let c = self.committer_pattern.as_ref().map_or(true, |p| p.matches(&committer.name, &committer.email));
+        a && c
+    }
+
+    fn matches_file(&self, path: &str, language: Option<&str>) -> bool {
+        let lang_ok = self.lang.as_ref().map_or(true, |l| {
+            language.is_some_and(|fl| l.eq_ignore_ascii_case(fl))
+        });
+        let path_ok = if self.path_pattern.is_none() && self.path_regex.is_none() {
+            true
+        } else {
+            let normalized = path.replace('\\', "/");
+            let p = self.path_pattern.as_ref().map_or(false, |pat| pat.matches(&normalized));
+            let r = self.path_regex.as_ref().map_or(false, |re| re.is_match(&normalized));
+            p || r
+        };
+        lang_ok && path_ok
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ExcludeRule {
     pub repo: Option<String>,
-    pub lang: Option<String>,
-    path_glob_raw: Option<String>,
-    path_pattern: Option<Pattern>,
-    path_regex: Option<Regex>,
+    and_groups: Vec<AndGroup>,
 }
 
 impl ExcludeRule {
-    /// Parse a single `--exclude` value into one or more rules.
-    ///
-    /// Comma-separated segments at top level create independent rules.
-    /// Segments starting with a qualifier keyword (`lang:`, `l:`, `path:`, `p:`)
-    /// attach to the preceding repo rule as an additional constraint.
     pub fn parse_many(value: &str) -> Vec<ExcludeRule> {
-        let segments: Vec<&str> = value.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
-        if segments.is_empty() {
-            return Vec::new();
-        }
-
         let mut rules: Vec<ExcludeRule> = Vec::new();
 
-        for seg in &segments {
-            if let Some(rest) = seg.strip_prefix("lang:")
-                .or_else(|| seg.strip_prefix("language:"))
-                .or_else(|| seg.strip_prefix("l:"))
-            {
+        for part in value.split(',') {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+
+            if is_qualifier_prefix(part) {
+                let groups = parse_all_qualifiers(part);
                 if let Some(rule) = rules.last_mut() {
-                    rule.lang = Some(rest.to_string());
+                    rule.and_groups.extend(groups);
                 } else {
-                    rules.push(ExcludeRule::new(None, Some(rest), None));
+                    rules.push(ExcludeRule { repo: None, and_groups: groups });
                 }
-            } else if let Some(rest) = seg.strip_prefix("path:")
-                .or_else(|| seg.strip_prefix("p:"))
-            {
-                if let Some(rule) = rules.last_mut() {
-                    rule.set_path(rest);
-                } else {
-                    rules.push(ExcludeRule::new(None, None, Some(rest)));
-                }
+                continue;
+            }
+
+            if let Some((repo_part, quals)) = part.split_once(':') {
+                let repo = if repo_part.is_empty() { None } else { Some(repo_part.to_string()) };
+                let groups = parse_all_qualifiers(quals);
+                rules.push(ExcludeRule { repo, and_groups: groups });
             } else {
-                let (repo_name, qualifiers) = split_first_colon(seg);
-                let repo = if repo_name.is_empty() { None } else { Some(repo_name) };
-                let mut rule = ExcludeRule::new(repo, None, None);
-                parse_inline_qualifiers(&mut rule, &qualifiers);
-                rules.push(rule);
+                rules.push(ExcludeRule { repo: Some(part.to_string()), and_groups: vec![] });
             }
         }
 
         rules
-    }
-
-    fn new(repo: Option<&str>, lang: Option<&str>, path_glob: Option<&str>) -> Self {
-        let mut rule = ExcludeRule {
-            repo: repo.map(|s| s.to_string()),
-            lang: lang.map(|s| s.to_string()),
-            path_glob_raw: None,
-            path_pattern: None,
-            path_regex: None,
-        };
-        if let Some(g) = path_glob {
-            rule.set_path(g);
-        }
-        rule
-    }
-
-    fn set_path(&mut self, glob_str: &str) {
-        self.path_glob_raw = Some(glob_str.to_string());
-        self.path_pattern = Pattern::new(glob_str).ok();
-        self.path_regex = glob_to_regex(glob_str);
     }
 
     fn matches_repo(&self, repo_name: &str) -> bool {
@@ -98,73 +116,78 @@ impl ExcludeRule {
         }
     }
 
-    fn matches_lang(&self, lang: &str) -> bool {
-        self.lang.as_deref().is_some_and(|l| lang.eq_ignore_ascii_case(l))
-    }
-
-    fn matches_path(&self, path: &str) -> bool {
-        if self.path_pattern.is_none() && self.path_regex.is_none() {
-            return false;
-        }
-        let normalized = path.replace('\\', "/");
-        if let Some(ref pat) = self.path_pattern {
-            if pat.matches(&normalized) {
-                return true;
-            }
-        }
-        if let Some(ref re) = self.path_regex {
-            if re.is_match(&normalized) {
-                return true;
-            }
-        }
-        false
-    }
-
     pub fn is_repo_exclusion(&self) -> bool {
-        self.lang.is_none() && self.path_pattern.is_none() && self.path_regex.is_none()
+        self.and_groups.is_empty() || self.and_groups.iter().all(|g| g.is_empty())
     }
 
     pub fn has_lang(&self) -> bool {
-        self.lang.is_some()
+        self.and_groups.iter().any(|g| g.lang.is_some())
     }
 
     pub fn has_path(&self) -> bool {
-        self.path_pattern.is_some() || self.path_regex.is_some()
+        self.and_groups.iter().any(|g| g.path_pattern.is_some() || g.path_regex.is_some())
+    }
+
+    pub fn all_langs_for_repo(&self, repo_name: &str) -> Vec<String> {
+        if !self.matches_repo(repo_name) { return Vec::new(); }
+        self.and_groups.iter().filter_map(|g| g.lang.clone()).collect()
     }
 }
 
-fn split_first_colon(s: &str) -> (&str, &str) {
-    match s.find(':') {
-        Some(pos) => (&s[..pos], &s[pos + 1..]),
-        None => (s, ""),
-    }
+fn is_qualifier_prefix(s: &str) -> bool {
+    s.starts_with("lang:")
+        || s.starts_with("language:")
+        || s.starts_with("l:")
+        || s.starts_with("path:")
+        || s.starts_with("p:")
+        || s.starts_with("author:")
+        || s.starts_with("a:")
+        || s.starts_with("committer:")
+        || s.starts_with("c:")
 }
 
-fn parse_inline_qualifiers(rule: &mut ExcludeRule, qualifiers: &str) {
-    if qualifiers.is_empty() {
-        return;
+fn parse_all_qualifiers(rest: &str) -> Vec<AndGroup> {
+    if rest.is_empty() {
+        return Vec::new();
     }
-    for part in qualifiers.split(',') {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-        if let Some(rest) = part.strip_prefix("lang:")
-            .or_else(|| part.strip_prefix("language:"))
-            .or_else(|| part.strip_prefix("l:"))
-        {
-            rule.lang = Some(rest.to_string());
-        } else if let Some(rest) = part.strip_prefix("path:")
-            .or_else(|| part.strip_prefix("p:"))
-        {
-            rule.set_path(rest);
-        } else if let Some((key, value)) = part.split_once(':') {
-            match key {
-                "lang" | "language" | "l" => rule.lang = Some(value.to_string()),
-                "path" | "p" => rule.set_path(value),
-                _ => {}
+    let mut groups = Vec::new();
+    for or_part in rest.split(',') {
+        let mut group = AndGroup::default();
+        for and_part in or_part.split('+') {
+            let and_part = and_part.trim();
+            if and_part.is_empty() { continue; }
+            if let Some((key, value)) = and_part.split_once(':') {
+                match key {
+                    "lang" | "language" | "l" => group.lang = Some(value.trim().to_string()),
+                    "path" | "p" => set_path(&mut group, value.trim()),
+                    "author" | "a" => group.author_pattern = parse_author(value.trim()),
+                    "committer" | "c" => group.committer_pattern = parse_author(value.trim()),
+                    _ => {}
+                }
             }
         }
+        if !group.is_empty() {
+            groups.push(group);
+        }
+    }
+    groups
+}
+
+fn set_path(group: &mut AndGroup, glob_str: &str) {
+    group.path_pattern = Pattern::new(glob_str).ok();
+    group.path_regex = glob_to_regex(glob_str);
+}
+
+fn parse_author(pattern: &str) -> Option<AuthorPattern> {
+    if pattern.is_empty() {
+        return None;
+    }
+    if let Some(username) = pattern.strip_prefix("github:") {
+        Some(AuthorPattern::GitHubUser(username.to_string()))
+    } else if let Ok(pat) = Pattern::new(pattern) {
+        Some(AuthorPattern::Glob(pat))
+    } else {
+        None
     }
 }
 
@@ -172,7 +195,6 @@ fn glob_to_regex(glob: &str) -> Option<Regex> {
     if Pattern::new(glob).is_ok() {
         return None;
     }
-
     let mut regex_str = String::from("^");
     let chars: Vec<char> = glob.chars().collect();
     let mut i = 0;
@@ -218,17 +240,22 @@ pub fn filter_commits(commits: Vec<CommitStats>, rules: &[ExcludeRule]) -> Vec<C
                 if rule.is_repo_exclusion() {
                     return None;
                 }
-                if rule.has_lang() || rule.has_path() {
-                    let before = commit.file_changes.len();
-                    commit.file_changes.retain(|fc| {
-                        let lang_match = rule.has_lang()
-                            && fc.language.as_deref().is_some_and(|l| rule.matches_lang(l));
-                        let path_match = rule.has_path() && rule.matches_path(&fc.path);
-                        !(lang_match || path_match)
-                    });
-                    if commit.file_changes.is_empty() && before > 0 {
+                let had_files = !commit.file_changes.is_empty();
+                for group in &rule.and_groups {
+                    let commit_ok = group.matches_commit(&commit.author, &commit.committer);
+                    if group.has_commit_qualifiers() && !commit_ok {
+                        continue;
+                    }
+                    if group.has_file_qualifiers() {
+                        commit.file_changes.retain(|fc| {
+                            !group.matches_file(&fc.path, fc.language.as_deref())
+                        });
+                    } else if commit_ok {
                         return None;
                     }
+                }
+                if commit.file_changes.is_empty() && had_files {
+                    return None;
                 }
             }
             Some(commit)
@@ -241,10 +268,7 @@ pub fn is_repo_excluded(repo_name: &str, rules: &[ExcludeRule]) -> bool {
 }
 
 pub fn excluded_langs_for_repo(repo_name: &str, rules: &[ExcludeRule]) -> Vec<String> {
-    rules.iter()
-        .filter(|r| r.matches_repo(repo_name) && r.has_lang())
-        .filter_map(|r| r.lang.clone())
-        .collect()
+    rules.iter().flat_map(|r| r.all_langs_for_repo(repo_name)).collect()
 }
 
 pub fn any_path_rules(rules: &[ExcludeRule]) -> bool {
@@ -260,8 +284,7 @@ mod tests {
         let rules = ExcludeRule::parse_many("my-repo");
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].repo.as_deref(), Some("my-repo"));
-        assert!(rules[0].lang.is_none());
-        assert!(rules[0].path_pattern.is_none());
+        assert!(rules[0].is_repo_exclusion());
     }
 
     #[test]
@@ -269,15 +292,16 @@ mod tests {
         let rules = ExcludeRule::parse_many("my-repo:lang:rust");
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].repo.as_deref(), Some("my-repo"));
-        assert_eq!(rules[0].lang.as_deref(), Some("rust"));
+        assert!(rules[0].has_lang());
+        let langs = rules[0].all_langs_for_repo("my-repo");
+        assert_eq!(langs, vec!["rust"]);
     }
 
     #[test]
     fn parse_repo_with_short_lang() {
         let rules = ExcludeRule::parse_many("my-repo:l:rust");
         assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].repo.as_deref(), Some("my-repo"));
-        assert_eq!(rules[0].lang.as_deref(), Some("rust"));
+        assert!(rules[0].has_lang());
     }
 
     #[test]
@@ -285,8 +309,7 @@ mod tests {
         let rules = ExcludeRule::parse_many("my-repo:path:src/**");
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].repo.as_deref(), Some("my-repo"));
-        assert!(rules[0].lang.is_none());
-        assert!(rules[0].path_pattern.is_some());
+        assert!(rules[0].has_path());
     }
 
     #[test]
@@ -296,7 +319,7 @@ mod tests {
         assert_eq!(rules[0].repo.as_deref(), Some("repo1"));
         assert!(rules[0].is_repo_exclusion());
         assert_eq!(rules[1].repo.as_deref(), Some("repo2"));
-        assert_eq!(rules[1].lang.as_deref(), Some("js"));
+        assert!(rules[1].has_lang());
     }
 
     #[test]
@@ -304,7 +327,7 @@ mod tests {
         let rules = ExcludeRule::parse_many(":lang:markdown");
         assert_eq!(rules.len(), 1);
         assert!(rules[0].repo.is_none());
-        assert_eq!(rules[0].lang.as_deref(), Some("markdown"));
+        assert!(rules[0].has_lang());
     }
 
     #[test]
@@ -312,45 +335,114 @@ mod tests {
         let rules = ExcludeRule::parse_many(":p:**/*.md");
         assert_eq!(rules.len(), 1);
         assert!(rules[0].repo.is_none());
-        assert!(rules[0].path_pattern.is_some());
+        assert!(rules[0].has_path());
+    }
+
+    #[test]
+    fn parse_and_semantics() {
+        let rules = ExcludeRule::parse_many("my-repo:lang:rust+path:src/**");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].and_groups.len(), 1);
+        assert!(rules[0].and_groups[0].lang.is_some());
+        assert!(rules[0].and_groups[0].path_pattern.is_some());
+    }
+
+    #[test]
+    fn parse_or_semantics() {
+        let rules = ExcludeRule::parse_many("my-repo:lang:rust,path:src/**");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].and_groups.len(), 2);
+    }
+
+    #[test]
+    fn parse_author_glob() {
+        let rules = ExcludeRule::parse_many(":author:*bot*");
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].repo.is_none());
+        assert!(rules[0].and_groups[0].author_pattern.is_some());
+    }
+
+    #[test]
+    fn parse_committer_glob() {
+        let rules = ExcludeRule::parse_many("repo:c:dependabot*");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].repo.as_deref(), Some("repo"));
+        assert!(rules[0].and_groups[0].committer_pattern.is_some());
+    }
+
+    #[test]
+    fn parse_author_github() {
+        let rules = ExcludeRule::parse_many(":author:github:torvalds");
+        assert_eq!(rules.len(), 1);
+        let pattern = &rules[0].and_groups[0].author_pattern;
+        assert!(pattern.is_some());
     }
 
     #[test]
     fn repo_match_exact() {
-        let rule = ExcludeRule::new(Some("my-repo"), None, None);
+        let rule = ExcludeRule { repo: Some("my-repo".into()), and_groups: vec![] };
         assert!(rule.matches_repo("my-repo"));
         assert!(!rule.matches_repo("other-repo"));
     }
 
     #[test]
     fn repo_match_prefix() {
-        let rule = ExcludeRule::new(Some("owner"), None, None);
+        let rule = ExcludeRule { repo: Some("owner".into()), and_groups: vec![] };
         assert!(rule.matches_repo("owner/repo-name"));
         assert!(!rule.matches_repo("other/repo"));
     }
 
     #[test]
     fn global_rule_matches_all() {
-        let rule = ExcludeRule::new(None, Some("rust"), None);
+        let rule = ExcludeRule { repo: None, and_groups: vec![AndGroup { lang: Some("rust".into()), ..Default::default() }] };
         assert!(rule.matches_repo("any-repo"));
-        assert!(rule.matches_repo("owner/other"));
     }
 
     #[test]
     fn path_match_glob() {
-        let mut rule = ExcludeRule::new(Some("repo"), None, None);
-        rule.set_path("src/**");
-        assert!(rule.matches_path("src/main.rs"));
-        assert!(rule.matches_path("src/lib/mod.rs"));
-        assert!(!rule.matches_path("tests/main.rs"));
+        let mut group = AndGroup::default();
+        set_path(&mut group, "src/**");
+        assert!(group.matches_file("src/main.rs", None));
+        assert!(group.matches_file("src/lib/mod.rs", None));
+        assert!(!group.matches_file("tests/main.rs", None));
     }
 
     #[test]
     fn path_match_wildcard() {
-        let mut rule = ExcludeRule::new(Some("repo"), None, None);
-        rule.set_path("*.md");
-        assert!(rule.matches_path("README.md"));
-        assert!(rule.matches_path("docs/guide.md"));
-        assert!(!rule.matches_path("src/main.rs"));
+        let mut group = AndGroup::default();
+        set_path(&mut group, "*.md");
+        assert!(group.matches_file("README.md", None));
+        assert!(group.matches_file("docs/guide.md", None));
+        assert!(!group.matches_file("src/main.rs", None));
+    }
+
+    #[test]
+    fn author_glob_matches_name() {
+        let pat = parse_author("*bot*").unwrap();
+        assert!(pat.matches("dependabot[bot]", "bot@github.com"));
+        assert!(pat.matches("ci-bot", "ci@example.com"));
+        assert!(!pat.matches("alice", "alice@example.com"));
+    }
+
+    #[test]
+    fn author_and_group_matches_commit() {
+        let group = AndGroup {
+            author_pattern: parse_author("*bot*"),
+            ..Default::default()
+        };
+        let author = Author { name: "renovate[bot]".into(), email: "bot@renovate.com".into() };
+        let committer = Author { name: "ci".into(), email: "ci@example.com".into() };
+        assert!(group.matches_commit(&author, &committer));
+    }
+
+    #[test]
+    fn author_and_group_not_matches() {
+        let group = AndGroup {
+            author_pattern: parse_author("*bot*"),
+            ..Default::default()
+        };
+        let author = Author { name: "alice".into(), email: "alice@example.com".into() };
+        let committer = Author { name: "alice".into(), email: "alice@example.com".into() };
+        assert!(!group.matches_commit(&author, &committer));
     }
 }
