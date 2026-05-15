@@ -141,6 +141,8 @@ jobs:
 | `lang-rows` | `2` | Language rows |
 | `title` | | Custom title |
 | `output` | `profile-card.svg` | Output path |
+| `retry-count` | `3` | Retry attempts on failure |
+| `retry-delay` | `5` | Seconds between retries |
 
 ## License
 

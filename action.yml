@@ -45,6 +45,12 @@ inputs:
   output:
     description: 'Output SVG file path'
     default: 'profile-card.svg'
+  retry-count:
+    description: 'Number of retry attempts for the Generate SVG step'
+    default: '3'
+  retry-delay:
+    description: 'Delay in seconds between retry attempts'
+    default: '5'
 
 outputs:
   svg-path:
@@ -105,4 +111,26 @@ runs:
 
         CMD="$CMD -o ${{ inputs.output }}"
         echo "Running: $CMD"
-        eval $CMD
+
+        MAX_RETRIES=${{ inputs.retry-count }}
+        RETRY_DELAY=${{ inputs.retry-delay }}
+        ATTEMPT=1
+
+        while [ $ATTEMPT -le $MAX_RETRIES ]; do
+          echo "::group::Attempt $ATTEMPT/$MAX_RETRIES"
+          if eval $CMD; then
+            echo "::endgroup::"
+            echo "Succeeded on attempt $ATTEMPT"
+            exit 0
+          fi
+          EXIT_CODE=$?
+          echo "::endgroup::"
+          if [ $ATTEMPT -lt $MAX_RETRIES ]; then
+            echo "Attempt $ATTEMPT failed with exit code $EXIT_CODE. Retrying in ${RETRY_DELAY}s..."
+            sleep $RETRY_DELAY
+          else
+            echo "All $MAX_RETRIES attempts failed. Last exit code: $EXIT_CODE"
+            exit $EXIT_CODE
+          fi
+          ATTEMPT=$((ATTEMPT + 1))
+        done
