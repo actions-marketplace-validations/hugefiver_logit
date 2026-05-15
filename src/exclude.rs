@@ -68,15 +68,15 @@ impl AndGroup {
     }
 
     fn matches_file(&self, path: &str, language: Option<&str>) -> bool {
-        let lang_ok = self.lang.as_ref().map_or(true, |l| {
-            language.is_some_and(|fl| l.eq_ignore_ascii_case(fl))
-        });
+            let lang_ok = self.lang.as_ref().is_none_or(|l| {
+                language.is_some_and(|fl| l.eq_ignore_ascii_case(fl))
+            });
         let path_ok = if self.path_pattern.is_none() && self.path_regex.is_none() {
             true
         } else {
             let normalized = path.replace('\\', "/");
-            let p = self.path_pattern.as_ref().map_or(false, |pat| pat.matches(&normalized));
-            let r = self.path_regex.as_ref().map_or(false, |re| re.is_match(&normalized));
+            let p = self.path_pattern.as_ref().is_some_and(|pat| pat.matches(&normalized));
+            let r = self.path_regex.as_ref().is_some_and(|re| re.is_match(&normalized));
             p || r
         };
         lang_ok && path_ok
@@ -110,8 +110,10 @@ impl ExcludeRule {
             }
 
             if let Some(username) = part.strip_prefix('@') {
-                let mut group = AndGroup::default();
-                group.author_pattern = Some(AuthorPattern::GitHubUser(username.to_string()));
+                let group = AndGroup {
+                    author_pattern: Some(AuthorPattern::GitHubUser(username.to_string())),
+                    ..Default::default()
+                };
                 let groups = vec![group];
                 if let Some(rule) = rules.last_mut() {
                     rule.and_groups.extend(groups);
@@ -146,6 +148,7 @@ impl ExcludeRule {
         self.and_groups.is_empty() || self.and_groups.iter().all(|g| g.is_empty())
     }
 
+    #[allow(dead_code)]
     pub fn has_lang(&self) -> bool {
         self.and_groups.iter().any(|g| g.lang.is_some())
     }
@@ -162,11 +165,15 @@ impl ExcludeRule {
     pub fn collect_github_users(&self) -> Vec<String> {
         let mut users = Vec::new();
         for group in &self.and_groups {
-            if let Some(AuthorPattern::GitHubUser(ref u)) = group.author_pattern {
-                if !users.contains(u) { users.push(u.clone()); }
+            if let Some(AuthorPattern::GitHubUser(ref u)) = group.author_pattern
+                && !users.contains(u)
+            {
+                users.push(u.clone());
             }
-            if let Some(AuthorPattern::GitHubUser(ref u)) = group.committer_pattern {
-                if !users.contains(u) { users.push(u.clone()); }
+            if let Some(AuthorPattern::GitHubUser(ref u)) = group.committer_pattern
+                && !users.contains(u)
+            {
+                users.push(u.clone());
             }
         }
         users
@@ -174,17 +181,17 @@ impl ExcludeRule {
 
     pub fn resolve_github_user(&mut self, username: &str, emails: &[String]) {
         for group in &mut self.and_groups {
-            if let Some(AuthorPattern::GitHubUser(ref u)) = group.author_pattern {
-                if u == username {
-                    group.author_emails = emails.to_vec();
-                    group.author_pattern = None;
-                }
+            if let Some(AuthorPattern::GitHubUser(ref u)) = group.author_pattern
+                && u == username
+            {
+                group.author_emails = emails.to_vec();
+                group.author_pattern = None;
             }
-            if let Some(AuthorPattern::GitHubUser(ref u)) = group.committer_pattern {
-                if u == username {
-                    group.committer_emails = emails.to_vec();
-                    group.committer_pattern = None;
-                }
+            if let Some(AuthorPattern::GitHubUser(ref u)) = group.committer_pattern
+                && u == username
+            {
+                group.committer_emails = emails.to_vec();
+                group.committer_pattern = None;
             }
         }
     }

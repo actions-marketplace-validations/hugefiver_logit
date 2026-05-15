@@ -190,6 +190,7 @@ impl GithubClient {
         const BACKOFF_SECS: [u64; 6] = [1, 2, 5, 15, 30, 60];
         let max_attempts = BACKOFF_SECS.len() + 1;
 
+        #[allow(clippy::needless_range_loop)]
         for attempt in 0..max_attempts {
             let resp = self
                 .client

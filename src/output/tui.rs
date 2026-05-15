@@ -36,6 +36,7 @@ fn sorted_languages(period: &PeriodStats) -> Vec<(&String, u64, u64)> {
     langs
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lang_tree_row<'a>(
     prefix: &str,
     lang_name: &str,
