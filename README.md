@@ -41,9 +41,11 @@ logit stats /path/to/projects
 # Filter by author, period, language
 logit stats --author "Alice" --period week --lang Rust
 
-# Multi-level grouping
-logit stats --group repo,author,period
-logit stats --group repo,language
+# Ordered primary fallback
+logit stats --group repo,author,language
+
+# Nested subgroup levels under the selected primary
+logit stats --group repo,author,language --groups author,period
 
 # Compact / short output
 logit stats --compact --short
@@ -51,12 +53,21 @@ logit stats --compact --short
 
 #### Group options
 
-`--group` accepts a comma-separated list: `repo`, `author`, `period`, `language`.
+`--group` is an ordered fallback list of primary dimensions: `repo`, `author`,
+`period`, `language`. It selects the first dimension with more than one distinct
+value. When exactly one non-language dimension is explicitly requested, it is
+retained even when unique so the requested group remains visible; otherwise,
+`language` is the final fallback.
 
-- Single group behaves like a flat table (backward-compatible).
-- Multiple groups produce a nested tree. For example `--group repo,author` shows authors within each repo.
-- If a grouping level has only one unique value across all data, it is automatically skipped.
-- `language` can only appear as the last group.
+`--groups` adds nested subgroup levels under that selected primary. For example,
+`logit stats --group repo,author,language --groups author,period` selects
+`author` when there is only one repository, then nests periods below each author.
+
+- A subgroup with only one distinct value is skipped.
+- One subgroup occurrence equal to the selected primary is removed; any other duplicate dimension is an error.
+- `language` may only be the final grouping level.
+- Local statistics support `repo`, `author`, `period`, and `language`.
+- GitHub contribution statistics support `repo`, `period`, and `language`; `author` is rejected because contribution records have no author identity.
 
 #### Excluding repos, languages, and paths
 
@@ -80,6 +91,17 @@ logit stats --exclude "my-repo:lang:md,p:*.md"
 logit stats --exclude :lang:json --exclude :path:**/*.lock
 ```
 
+#### GitHub identity filters and remote deduplication
+
+`--me github:<login>` and `--exclude @<login>` match that login's known public
+commit emails as well as its local GitHub noreply address. Email matching is
+case-insensitive. Identity-provider lookups are bounded; if a provider lookup
+fails or returns only partial data, logit writes a partial-warning to stderr and
+may miss unknown commit emails.
+
+`--dedup remote` checks each selected repository's GitHub `origin`
+independently, then merges identities that resolve to the same GitHub login.
+
 ### GitHub statistics
 
 Requires a `GITHUB_TOKEN` environment variable (PAT with `read:user` scope).
@@ -88,6 +110,7 @@ Requires a `GITHUB_TOKEN` environment variable (PAT with `read:user` scope).
 # Fetch contribution stats
 logit github fetch <username>
 logit github fetch <username> --period week --include-contributed
+logit github fetch <username> --group repo,language --groups period,language
 
 # Include private repos (token must belong to <username>; bypasses fine-grained PAT
 # limitation that hides private contributions in contributionsCollection)
@@ -101,6 +124,13 @@ logit github card <username> --short --days 90
 logit github multi <username> -p week,month,year
 ```
 
+#### GitHub cache behavior
+
+GitHub commands use the disk cache in ReadOnly mode by default. `--refresh-cache`
+reads cached data, fetches incremental updates, and writes the result back.
+`--no-cache` performs zero cache I/O and overrides `--refresh-cache` when both
+are supplied.
+
 ### Output formats
 
 ```sh
@@ -113,6 +143,9 @@ logit stats -f tui
 logit stats -o stats.txt
 logit github card <username> -o card.svg
 ```
+
+Warnings are written only to stderr; successful JSON output on stdout keeps its
+existing shape and field types.
 
 ## GitHub Action
 
@@ -164,8 +197,13 @@ jobs:
 | `lang-rows` | `2` | Language rows |
 | `title` | | Custom title |
 | `output` | `profile-card.svg` | Output path |
-| `retry-count` | `3` | Retry attempts on failure |
+| `retry-count` | `3` | Retries after the initial attempt |
 | `retry-delay` | `5` | Seconds between retries |
+
+The Action keeps its GitHub data cache at
+`${{ runner.temp }}/logit-github-cache` and automatically passes one
+`--refresh-cache` per card or multi invocation. Its 16 input names and its
+`svg-path` output remain stable.
 
 ## License
 

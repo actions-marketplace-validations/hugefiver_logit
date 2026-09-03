@@ -1,5 +1,6 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 
+use crate::git::author::canonical_email_key;
 use crate::stats::models::CommitStats;
 
 // ── AST ──────────────────────────────────────────────────────────────
@@ -162,6 +163,29 @@ pub fn parse_me_expr(input: &str) -> anyhow::Result<MeExpr> {
 // ── Evaluator ────────────────────────────────────────────────────────
 
 impl MeExpr {
+    /// Return every GitHub login referenced by this expression as canonical ASCII keys.
+    pub fn github_logins(&self) -> BTreeSet<String> {
+        let mut logins = BTreeSet::new();
+        self.collect_github_logins(&mut logins);
+        logins
+    }
+
+    fn collect_github_logins(&self, logins: &mut BTreeSet<String>) {
+        match self {
+            MeExpr::Atom(MeAtom::GitHub(login)) => {
+                let login = login.trim().to_ascii_lowercase();
+                if !login.is_empty() {
+                    logins.insert(login);
+                }
+            }
+            MeExpr::Atom(_) => {}
+            MeExpr::And(left, right) | MeExpr::Or(left, right) => {
+                left.collect_github_logins(logins);
+                right.collect_github_logins(logins);
+            }
+        }
+    }
+
     pub fn matches_commit(
         &self,
         commit: &CommitStats,
@@ -214,24 +238,34 @@ impl MeAtom {
     }
 }
 
+/// Match GitHub's exact local noreply email forms for a login.
+pub(crate) fn github_noreply_matches(email: &str, login: &str) -> bool {
+    // {id}+{username}@users.noreply.github.com or
+    // {username}@users.noreply.github.com
+    let email_lower = canonical_email_key(email);
+    if email_lower.ends_with("@users.noreply.github.com") {
+        let local = email_lower.split('@').next().unwrap_or("");
+        let extracted = local.split_once('+').map(|(_, u)| u).unwrap_or(local);
+        return extracted == login.trim().to_ascii_lowercase();
+    }
+    false
+}
+
 fn is_github_match(
     email: &str,
     username_lower: &str,
     identity_map: &HashMap<String, String>,
 ) -> bool {
-    // 1. Check identity map (email → github login)
-    if let Some(login) = identity_map.get(email)
-        && login.to_lowercase() == username_lower
-    {
+    // 1. Check local noreply email before consulting resolved identities.
+    if github_noreply_matches(email, username_lower) {
         return true;
     }
-    // 2. Check noreply pattern: {id}+{username}@users.noreply.github.com
-    //    or {username}@users.noreply.github.com
-    let email_lower = email.to_lowercase();
-    if email_lower.ends_with("@users.noreply.github.com") {
-        let local = email_lower.split('@').next().unwrap_or("");
-        let extracted = local.split_once('+').map(|(_, u)| u).unwrap_or(local);
-        return extracted == username_lower;
+    // 2. Check identity map (canonical email → canonical GitHub login).
+    let email_lower = canonical_email_key(email);
+    if let Some(login) = identity_map.get(&email_lower)
+        && login.eq_ignore_ascii_case(username_lower)
+    {
+        return true;
     }
     false
 }
@@ -243,6 +277,7 @@ mod tests {
 
     fn make_commit(name: &str, email: &str) -> CommitStats {
         CommitStats {
+            repo_id: "test-id".to_string(),
             repo: "test".to_string(),
             oid: "abc123".to_string(),
             author: Author {
@@ -361,12 +396,44 @@ mod tests {
     }
 
     #[test]
+    fn github_noreply_match_canonicalizes_email_and_login() {
+        assert!(github_noreply_matches(
+            " 18693500+OctoCat@users.noreply.github.com ",
+            " OCTOCAT "
+        ));
+        assert!(!github_noreply_matches(
+            "octocat@notusers.noreply.github.com",
+            "octocat"
+        ));
+    }
+
+    #[test]
     fn match_github_identity_map() {
         let expr = parse_me_expr("github:hugefiver").unwrap();
         let commit = make_commit("Hugefiver", "i@iruri.moe");
         let mut map = HashMap::new();
         map.insert("i@iruri.moe".to_string(), "hugefiver".to_string());
         assert!(expr.matches_commit(&commit, &map));
+    }
+
+    #[test]
+    fn github_identity_map_uses_canonical_commit_email() {
+        let expr = parse_me_expr("github:octocat").unwrap();
+        let commit = make_commit("Octocat", " OctoCat@Example.COM ");
+        let map = HashMap::from([("octocat@example.com".to_string(), "octocat".to_string())]);
+
+        assert!(expr.matches_commit(&commit, &map));
+    }
+
+    #[test]
+    fn github_logins_are_ascii_lowercase_and_deduplicated() {
+        let expr =
+            parse_me_expr("github:OctoCat|(name:Alice&github:octocat)|github:Hubot").unwrap();
+
+        assert_eq!(
+            expr.github_logins(),
+            BTreeSet::from(["hubot".to_string(), "octocat".to_string()])
+        );
     }
 
     #[test]
